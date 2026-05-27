@@ -23,7 +23,7 @@ import requests
 try:
     import browser_cookie3
 except ImportError:
-    print("ERRO: browser_cookie3 não instalado. Rode: pip install -r requirements.txt")
+    print("ERROR: browser_cookie3 not installed. Run: pip install -r requirements.txt")
     sys.exit(1)
 
 
@@ -121,7 +121,7 @@ def save_profile_map(pmap: dict) -> None:
 
 def load_config() -> dict:
     if not CONFIG_PATH.exists():
-        print(f"ERRO: config.json não encontrado em {CONFIG_PATH}")
+        print(f"ERROR: config.json not found at {CONFIG_PATH}")
         sys.exit(1)
     with CONFIG_PATH.open("r", encoding="utf-8") as f:
         return json.load(f)
@@ -222,7 +222,7 @@ class ProfileCookieLoader:
         try:
             cj = load_cookies_for_profile(prof)
         except Exception as e:
-            log(f"   (falha ao ler cookies de {profile_dir}: {e})")
+            log(f"   (failed to read cookies from {profile_dir}: {e})")
             cj = None
         self._cache[profile_dir] = cj
         return cj
@@ -256,28 +256,28 @@ def cmd_check() -> int:
     config = load_config()
     cases = config.get("cases", [])
     if not cases:
-        print("ERRO: nenhum caso configurado em config.json")
+        print("ERROR: no cases configured in config.json")
         return 1
 
     DATA_DIR.mkdir(exist_ok=True)
 
     profiles = discover_chrome_profiles()
     if not profiles:
-        print("ERRO: nenhum Chrome profile encontrado.")
-        print("Faça login em my.uscis.gov no Chrome primeiro.")
+        print("ERROR: no Chrome profiles found.")
+        print("Sign in to my.uscis.gov in Chrome first.")
         return 1
-    log(f"Chrome profiles encontrados: {', '.join(p['dir'] for p in profiles)}")
+    log(f"Chrome profiles found: {', '.join(p['dir'] for p in profiles)}")
 
     loader = ProfileCookieLoader(profiles)
     pmap = load_profile_map()
 
-    log(f"Checando {len(cases)} casos...")
+    log(f"Checking {len(cases)} cases...")
 
     for case in cases:
         name = case.get("name", "?")
         receipt = case.get("receipt", "").strip()
         if not receipt:
-            log(f"⚠️  {name} — receipt vazio, pulando")
+            log(f"⚠️  {name} — empty receipt, skipping")
             continue
 
         history = load_history(receipt)
@@ -295,22 +295,22 @@ def cmd_check() -> int:
         snapshot, err, used = try_case_against_profiles(receipt, order, loader)
 
         if snapshot is None:
-            if err == "auth":
+            if err in ("auth", "http:500"):
                 history["cookie_expired"] = True
                 history["checks"].append({
                     "timestamp": now_iso(), "sha": None, "changed": False,
                     "cookie_expired": True, "error": "auth", "snapshot": None,
                 })
                 save_history(history)
-                hint = f" (tentei: {', '.join(order)})"
-                log(f"⚠️  {name} ({receipt}) — sem profile autorizado{hint}")
+                hint = f" (tried: {', '.join(order)})"
+                log(f"⚠️  {name} ({receipt}) — no authorized profile{hint}")
             else:
                 history["checks"].append({
                     "timestamp": now_iso(), "sha": None, "changed": False,
                     "cookie_expired": False, "error": err, "snapshot": None,
                 })
                 save_history(history)
-                log(f"⚠️  {name} ({receipt}) — erro: {err}")
+                log(f"⚠️  {name} ({receipt}) — error: {err}")
             continue
 
         pmap[receipt] = used
@@ -326,14 +326,14 @@ def cmd_check() -> int:
         history["last_sha"] = sha
         save_history(history)
 
-        marker = "🔔 SILENT UPDATE DETECTADO" if changed else (
-            "primeira checagem" if len(history["checks"]) == 1 else "sem mudança"
+        marker = "🔔 SILENT UPDATE DETECTED" if changed else (
+            "first check" if len(history["checks"]) == 1 else "no change"
         )
         log(f"{'🔔' if changed else '✓'} {name} ({receipt}) [{used}] — {marker}")
 
     save_profile_map(pmap)
     write_dashboard(cases)
-    log(f"Dashboard gerado: {DASHBOARD_PATH}")
+    log(f"Dashboard written: {DASHBOARD_PATH}")
     return 0
 
 
@@ -362,17 +362,17 @@ def cmd_setup() -> int:
     DATA_DIR.mkdir(exist_ok=True)
 
     profiles = discover_chrome_profiles()
-    print(f"\nChrome profiles encontrados ({len(profiles)}):")
+    print(f"\nFound {len(profiles)} Chrome profile(s):")
     for p in profiles:
-        acct = p["user_name"] or "(sem login Google)"
+        acct = p["user_name"] or "(no Google sign-in)"
         print(f"  {p['dir']:14s}  {p['display']:30s}  {acct}")
     if not profiles:
-        print("  (nenhum)")
+        print("  (none)")
 
     loader = ProfileCookieLoader(profiles)
     pmap = load_profile_map()
 
-    print(f"\nTestando acesso aos {len(cases)} casos...\n")
+    print(f"\nTesting access to {len(cases)} case(s)...\n")
     unmapped = []
     for case in cases:
         name = case["name"]
@@ -384,23 +384,23 @@ def cmd_setup() -> int:
             pmap[receipt] = used
             print(f"  ✓ {name:30s} {receipt}  →  {used}")
         else:
-            print(f"  ✗ {name:30s} {receipt}  →  sem profile autorizado")
+            print(f"  ✗ {name:30s} {receipt}  →  no authorized profile")
             unmapped.append(case)
 
     save_profile_map(pmap)
 
     if not unmapped:
-        print("\nTudo mapeado. Rode: python check.py")
+        print("\nAll cases mapped. Run: python check.py")
         return 0
 
     # Group unmapped by owner (first word of name)
     groups: dict[str, list[dict]] = {}
     for case in unmapped:
-        owner = case["name"].split()[0] if case["name"] else "Conta"
+        owner = case["name"].split()[0] if case["name"] else "Account"
         groups.setdefault(owner, []).append(case)
 
-    print(f"\n{len(unmapped)} caso(s) sem profile autorizado.")
-    print("Sugestão: um Chrome profile separado por conta USCIS.\n")
+    print(f"\n{len(unmapped)} case(s) without an authorized profile.")
+    print("Suggestion: one Chrome profile per USCIS account.\n")
 
     existing_dirs = {p["dir"] for p in profiles}
     for owner, items in groups.items():
@@ -410,14 +410,14 @@ def cmd_setup() -> int:
         while suggested in existing_dirs:
             suggested = f"{owner}{i}"
             i += 1
-        print(f"  Conta '{owner}' ({len(items)} caso[s]): sugestão de profile = \"{suggested}\"")
+        print(f"  Account '{owner}' ({len(items)} case[s]): suggested profile = \"{suggested}\"")
         for c in items:
             print(f"     • {c['name']} ({c['receipt']})")
-        ans = input(f"     Abrir Chrome no profile '{suggested}' agora? [y/N] ").strip().lower()
+        ans = input(f"     Open Chrome in profile '{suggested}' now? [y/N] ").strip().lower()
         if ans == "y":
             launch_chrome_profile(suggested)
             existing_dirs.add(suggested)
-            print(f"     → Chrome aberto. Faça login na conta da '{owner}', depois rode:")
+            print(f"     → Chrome opened. Sign in to '{owner}'s account, then run:")
             print(f"        python check.py setup")
         print()
 
@@ -691,15 +691,15 @@ DASHBOARD_TEMPLATE = r"""<!DOCTYPE html>
 <header>
   <div>
     <h1>USCIS Silent Update Tracker</h1>
-    <div class="meta">Última execução: <span id="generated">__GENERATED__</span><span id="globalBadge"></span></div>
+    <div class="meta">Last run: <span id="generated">__GENERATED__</span><span id="globalBadge"></span></div>
   </div>
 </header>
 <div id="cookieBanner"></div>
 <main id="cards"></main>
 <footer>
-  Renovar cookie: faça login em <code>my.uscis.gov</code> no Chrome &nbsp;·&nbsp;
-  Rodar de novo: <code>python check.py</code> &nbsp;·&nbsp;
-  Histórico em <code>data/{receipt}.json</code>
+  Refresh cookie: sign in to <code>my.uscis.gov</code> in Chrome &nbsp;·&nbsp;
+  Re-run: <code>python check.py</code> &nbsp;·&nbsp;
+  History under <code>data/{receipt}.json</code>
 </footer>
 
 <script>
@@ -729,15 +729,15 @@ function changedSinceLastRun(checks) {
 
 function renderBadge(caseData) {
   if (caseData.cookie_expired) {
-    return '<span class="badge err">⚠ Cookie Expirado</span>';
+    return '<span class="badge err">⚠ Cookie Expired</span>';
   }
   if (!caseData.checks || !caseData.checks.length) {
-    return '<span class="badge idle">● Sem dados</span>';
+    return '<span class="badge idle">● No data</span>';
   }
   const last = caseData.checks[caseData.checks.length - 1];
-  if (last.error) return '<span class="badge err">⚠ Erro</span>';
+  if (last.error) return '<span class="badge err">⚠ Error</span>';
   if (last.changed) return '<span class="badge update">🔔 Silent Update</span>';
-  return '<span class="badge ok">● Sem Mudança</span>';
+  return '<span class="badge ok">● No Change</span>';
 }
 
 function escapeHtml(s) {
@@ -749,7 +749,7 @@ function escapeHtml(s) {
 
 function renderEvents(events) {
   if (!Array.isArray(events) || !events.length) {
-    return '<div class="empty">Sem eventos</div>';
+    return '<div class="empty">No events</div>';
   }
   const sorted = [...events].sort((a, b) => {
     const ta = a.createdAt || a.timestamp || '';
@@ -765,7 +765,7 @@ function renderEvents(events) {
 
 function renderHistory(checks) {
   if (!checks || !checks.length) {
-    return '<div class="empty">Sem checagens</div>';
+    return '<div class="empty">No checks yet</div>';
   }
   const rows = [...checks].slice(-20).reverse().map(c => {
     const cls = c.error ? 'error' : (c.changed ? 'changed' : '');
@@ -777,7 +777,7 @@ function renderHistory(checks) {
     return `<tr class="${cls}"><td>${escapeHtml(fmtTs(c.timestamp))}</td><td>${sha}</td><td>${mark}</td></tr>`;
   }).join('');
   return `<table class="history-table">
-    <thead><tr><th>Data/Hora</th><th>SHA</th><th>Mudança</th></tr></thead>
+    <thead><tr><th>Timestamp</th><th>SHA</th><th>Change</th></tr></thead>
     <tbody>${rows}</tbody>
   </table>`;
 }
@@ -808,11 +808,11 @@ function renderCard(caseData) {
         ${closed ? '<dt>Flag</dt><dd style="color:var(--muted)">Closed</dd>' : ''}
       </dl>
       <div class="events">
-        <h4>Eventos recentes</h4>
+        <h4>Recent events</h4>
         ${renderEvents(snap ? snap.events : null)}
       </div>
       <div class="history">
-        <h4>Checagens (últimas 20)</h4>
+        <h4>Checks (last 20)</h4>
         ${renderHistory(caseData.checks)}
       </div>
     </article>
@@ -823,12 +823,12 @@ function render() {
   const cookieExpired = CASES.some(c => c.cookie_expired);
   if (cookieExpired) {
     document.getElementById('cookieBanner').innerHTML =
-      '<div class="cookie-banner">⚠ Sessão expirada — faça login em my.uscis.gov no Chrome e rode o script novamente</div>';
+      '<div class="cookie-banner">⚠ Session expired — sign in to my.uscis.gov in Chrome and re-run the script</div>';
   }
   const updatesCount = CASES.filter(c => changedSinceLastRun(c.checks || [])).length;
   if (updatesCount > 0) {
     document.getElementById('globalBadge').innerHTML =
-      ` <span class="global-badge">${updatesCount} update${updatesCount > 1 ? 's' : ''} desde última checagem</span>`;
+      ` <span class="global-badge">${updatesCount} update${updatesCount > 1 ? 's' : ''} since last check</span>`;
   }
   document.getElementById('cards').innerHTML = CASES.map(renderCard).join('');
 }

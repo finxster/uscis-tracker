@@ -1,44 +1,44 @@
 # USCIS Silent Update Tracker
 
-Monitora múltiplos casos USCIS (`IOE...`) via a API interna do `my.uscis.gov`, detecta *silent updates* (mudanças internas que não aparecem ainda no status público) por meio de SHA-256 sobre os campos relevantes, e renderiza um dashboard HTML estático com o histórico de cada caso.
+Monitors multiple USCIS cases (`IOE...`) via the internal `my.uscis.gov` API, detects *silent updates* (internal changes that haven't surfaced in the public status yet) by computing SHA-256 over the relevant fields, and renders a static HTML dashboard with each case's history.
 
-Sem servidor, sem banco, sem autenticação própria — usa o cookie do seu Chrome.
+No server, no database, no separate auth — it reuses your Chrome session cookies.
 
 ---
 
-## Como funciona
+## How it works
 
-1. O script lê os cookies do Chrome direto do disco (via `browser_cookie3`).
-2. Para cada caso configurado, faz `GET https://my.uscis.gov/account/case-service/api/cases/{receipt}`.
-3. Calcula SHA-256 sobre `updatedAt`, `status`, `events`, `closed`, `actionRequired` — campos que mudam quando algo de fato acontece com o caso.
-4. Compara com o SHA da execução anterior. Se diferente, é um silent update.
-5. Persiste **toda** checagem em `data/{receipt}.json` (nada é descartado).
-6. Regenera `dashboard.html` autossuficiente (dados + CSS + JS inline) — basta abrir no browser.
+1. Reads Chrome cookies straight from disk (via `browser_cookie3`).
+2. For each configured case, fires `GET https://my.uscis.gov/account/case-service/api/cases/{receipt}`.
+3. Computes SHA-256 over `updatedAt`, `status`, `events`, `closed`, `actionRequired` — the fields that move when something real happens on the case.
+4. Compares to the SHA from the previous run. Any difference is a silent update.
+5. Persists **every** check to `data/{receipt}.json` (nothing is ever discarded).
+6. Regenerates a self-contained `dashboard.html` (data + CSS + JS inline) — just open it in a browser.
 
-### Múltiplas contas USCIS
+### Multiple USCIS accounts
 
-Cada cookie de sessão só dá acesso aos casos da conta logada. Pra monitorar casos de várias contas simultaneamente, o script usa **Chrome profiles separados** — um por conta — e descobre automaticamente qual profile autoriza qual caso.
+Each session cookie only grants access to the cases owned by the logged-in account. To monitor cases from several accounts at once, the script uses **separate Chrome profiles** — one per account — and automatically figures out which profile is authorized for which case.
 
-- Auto-descoberta dos profiles em `~/Library/Application Support/Google/Chrome/`
-- Cache do mapeamento `receipt → profile` em `data/_profile_map.json`
-- Fallback automático: se o profile cacheado falha, tenta os outros
-- Detecção: USCIS retorna **HTTP 500** quando a conta logada não é dona do caso (não 401/403), então o script trata ambos como "tentar outro profile"
+- Auto-discovers profiles in `~/Library/Application Support/Google/Chrome/`
+- Caches the `receipt → profile` mapping in `data/_profile_map.json`
+- Automatic fallback: if the cached profile fails, it tries the others
+- Quirk: USCIS returns **HTTP 500** when the logged-in account doesn't own the requested case (not 401/403), so the script treats both as "try another profile"
 
 ---
 
 ## Setup
 
-### 1. Dependências
+### 1. Dependencies
 
 ```bash
 python3 -m pip install -r requirements.txt
 ```
 
-Apenas `requests` e `browser_cookie3`.
+Just `requests` and `browser_cookie3`.
 
-### 2. Configurar os casos
+### 2. Configure cases
 
-Copie o template e edite:
+Copy the template and edit:
 
 ```bash
 cp config.example.json config.json
@@ -47,108 +47,108 @@ cp config.example.json config.json
 ```json
 {
   "cases": [
-    { "name": "Luis I-485", "receipt": "IOE0936674431" },
-    { "name": "Theo EAD",   "receipt": "IOE0936674428" }
+    { "name": "Alice I-485", "receipt": "IOE0936674431" },
+    { "name": "Bob EAD",     "receipt": "IOE0936674428" }
   ]
 }
 ```
 
-- `name`: label livre para o dashboard (use um prefixo consistente por dono — ex: "Luis", "Theo", "Camila" — o setup usa isso pra agrupar)
-- `receipt`: número completo começando com `IOE`
+- `name`: free-form label shown in the dashboard. Use a consistent prefix per owner (e.g. "Alice", "Bob", "Carol") — the `setup` command uses it to group cases.
+- `receipt`: full receipt number starting with `IOE`.
 
-> `config.json` está no `.gitignore` — não é commitado.
+> `config.json` is in `.gitignore` and is never committed.
 
-### 3. Chrome profiles (uma conta USCIS por profile)
+### 3. Chrome profiles (one USCIS account per profile)
 
-Para cada conta USCIS que você quer monitorar:
+For each USCIS account you want to monitor:
 
-1. No Chrome: `chrome://settings/manageProfile` → **Add** → nome (ex: "Theo")
-2. Abra `https://my.uscis.gov` nesse profile e faça login completo (incluindo login.gov se for o caso)
-3. Confirme que a página do `/account/applicant` mostra os casos dessa conta
+1. In Chrome: `chrome://settings/manageProfile` → **Add** → name it (e.g. "Bob").
+2. Open `https://my.uscis.gov` inside that profile and sign in fully (including login.gov if applicable).
+3. Confirm that `/account/applicant` shows the cases for that account.
 
-> **Importante**: estar logado no Google nesse profile **não basta** — a sessão de `my.uscis.gov` é separada e precisa ser bootstrappada navegando até o `/account/applicant`.
+> **Important**: just being signed into Google in that profile is **not enough** — the `my.uscis.gov` session is independent and must be bootstrapped by navigating to `/account/applicant`.
 
-### 4. Mapear casos aos profiles
+### 4. Map cases to profiles
 
 ```bash
 python3 check.py setup
 ```
 
-Saída exemplo:
+Example output:
 
 ```
-Chrome profiles encontrados (2):
-  Default         Luis    oieusouofinx@gmail.com
-  Profile 1       Theo    theomvolpato@gmail.com
+Found 2 Chrome profiles:
+  Default         Alice   alice@gmail.com
+  Profile 1       Bob     bob@gmail.com
 
-Testando acesso aos 6 casos...
+Testing access to 6 cases...
 
-  ✓ Luis I-485     IOE0936674431  →  Default
-  ✓ Theo EAD       IOE0936674428  →  Profile 1
-  ✗ Camila I-485   IOE0936674434  →  sem profile autorizado
+  ✓ Alice I-485     IOE0936674431  →  Default
+  ✓ Bob EAD         IOE0936674428  →  Profile 1
+  ✗ Carol I-485     IOE0936674434  →  no authorized profile
 
-Conta 'Camila' (1 caso[s]): sugestão de profile = "Camila"
-   Abrir Chrome no profile 'Camila' agora? [y/N]
+Account 'Carol' (1 case): suggested profile = "Carol"
+   Open Chrome in profile 'Carol' now? [y/N]
 ```
 
-Pra casos não mapeados, o setup oferece abrir o Chrome num profile novo pra você logar. Depois de logar, rode `setup` de novo até dar tudo `✓`.
+For unmapped cases, `setup` offers to open Chrome in a new profile so you can sign in. After signing in, run `setup` again until everything shows `✓`.
 
 ---
 
-## Uso
+## Usage
 
 ```bash
 python3 check.py
 ```
 
-Saída:
+Output:
 
 ```
-[09:30:01] Chrome profiles encontrados: Default, Profile 1
-[09:30:01] Checando 6 casos...
-[09:30:02] ✓ Luis I-485 (IOE0936674431) [Default] — sem mudança
-[09:30:03] 🔔 Theo EAD (IOE0936674428) [Profile 1] — SILENT UPDATE DETECTADO
-[09:30:04] ⚠️  Maria I-485 (IOExxxxxxxxx) [Default, Profile 1] — sem profile autorizado
-[09:30:05] Dashboard gerado: dashboard.html
+[09:30:01] Chrome profiles found: Default, Profile 1
+[09:30:01] Checking 6 cases...
+[09:30:02] ✓ Alice I-485 (IOE0936674431) [Default] — no change
+[09:30:03] 🔔 Bob EAD (IOE0936674428) [Profile 1] — SILENT UPDATE DETECTED
+[09:30:04] ⚠️  Carol I-485 (IOExxxxxxxxx) [Default, Profile 1] — no authorized profile
+[09:30:05] Dashboard written: dashboard.html
 ```
 
-Abrir o dashboard:
+Open the dashboard:
 
 ```bash
 open dashboard.html
 ```
 
-### Frequência
+### Frequency
 
-1x por dia (de manhã, horário ET é quando a USCIS movimenta) é mais do que suficiente. 6 requests + leves backoffs ficam abaixo do radar do WAF.
+Once a day (in the morning ET — when USCIS actually moves cases) is more than enough. 6 requests with small backoffs stays well below WAF radar.
 
-### Agendamento
+### Scheduling
 
-Pra rodar automaticamente, configurar `launchd` (macOS) ou `cron`. O script é idempotente — se a sessão expirou, ele marca `cookie_expired` no estado e o dashboard mostra um banner.
+To run automatically, set up `launchd` (macOS) or `cron`. The script is idempotent — if the session has expired, it flags `cookie_expired` in state and the dashboard shows a banner.
 
 ---
 
-## Estrutura
+## Layout
 
 ```
 uscis-tracker/
-├── check.py                # script principal (CLI)
-├── config.json             # casos a monitorar (gitignored)
+├── check.py                # main script (CLI)
+├── config.json             # cases to monitor (gitignored)
 ├── config.example.json     # template
 ├── requirements.txt
-├── data/                   # histórico (gitignored)
-│   ├── IOE0936674431.json     # uma entry por receipt
+├── data/                   # history (gitignored)
+│   ├── IOE0936674431.json     # one file per receipt
 │   ├── ...
-│   └── _profile_map.json      # cache de receipt → Chrome profile
-└── dashboard.html          # gerado a cada execução (gitignored)
+│   └── _profile_map.json      # cached receipt → Chrome profile mapping
+└── dashboard.html          # regenerated each run (gitignored)
 ```
 
-### Formato de `data/{receipt}.json`
+### `data/{receipt}.json` format
 
 ```json
 {
   "receipt": "IOE0936674431",
-  "name": "Luis I-485",
+  "name": "Alice I-485",
   "last_sha": "a3f9b2...",
   "cookie_expired": false,
   "profile": "Default",
@@ -159,42 +159,42 @@ uscis-tracker/
       "changed": false,
       "cookie_expired": false,
       "profile": "Default",
-      "snapshot": { "...": "raw JSON da API" }
+      "snapshot": { "...": "raw API JSON" }
     }
   ]
 }
 ```
 
-Todas as checagens são preservadas — o array `checks` cresce indefinidamente.
+Every check is preserved — the `checks` array grows over time.
 
 ---
 
 ## Dashboard
 
-`dashboard.html` é um arquivo único e autossuficiente. Estética dark/âmbar/mono, sem dependências externas além do Google Fonts (IBM Plex). Mostra por caso:
+`dashboard.html` is a single, self-contained file. Dark / amber / monospace aesthetic, no external dependencies beyond Google Fonts (IBM Plex). Per case it shows:
 
-- Status público atual (quando disponível)
-- `updatedAt` interno
-- Eventos recentes (últimos 5, com `eventCode` + timestamp)
-- Histórico de checagens (últimas 20, com SHA e flag `CHANGED`)
-- Badge: `● SEM MUDANÇA`, `🔔 SILENT UPDATE` (pulsante) ou `⚠️ COOKIE EXPIRADO`
+- Current public status (when available)
+- Internal `updatedAt`
+- Recent events (last 5, with `eventCode` + timestamp)
+- Check history (last 20, with SHA and `CHANGED` flag)
+- Status badge: `● NO CHANGE`, `🔔 SILENT UPDATE` (pulsing), or `⚠️ COOKIE EXPIRED`
 
 ---
 
 ## Caveats
 
-- **Endpoint não-documentado**: `case-service/api/cases/{receipt}` é interno. Pode mudar sem aviso.
-- **Cloudflare**: o endpoint público `egov.uscis.gov/csol-api/case-tracking/` está protegido por challenge JS, então o script não consegue enriquecer com o texto amigável de status (apenas `eventCode`). Mapeamento local de códigos pode ser adicionado depois.
-- **Full Disk Access (macOS)**: `browser_cookie3` lê o SQLite do Chrome. Pode ser preciso conceder *Full Disk Access* ao Terminal/iTerm/VS Code em **System Settings → Privacy & Security**.
-- **Cookies em RAM**: cookies de aba anônima e cookies "fresquinhos" do Chrome em execução podem ainda não estar no disco. Em geral o flush acontece em segundos.
-- **Sessão expira**: a sessão de `my.uscis.gov` cai após algumas horas de inatividade. Quando isso acontece, o caso fica `cookie_expired: true` até você reabrir o profile e relogar.
+- **Undocumented endpoint**: `case-service/api/cases/{receipt}` is internal. It can change without notice.
+- **Cloudflare**: the public `egov.uscis.gov/csol-api/case-tracking/` endpoint is protected by Cloudflare JS challenges, so the script can't enrich snapshots with the friendly status text — only the raw `eventCode`. A local code → label mapping can be added later.
+- **Full Disk Access (macOS)**: `browser_cookie3` reads Chrome's cookie SQLite. You may need to grant *Full Disk Access* to your Terminal/iTerm/VS Code under **System Settings → Privacy & Security**.
+- **Cookies still in RAM**: incognito cookies and freshly-set cookies in a running Chrome may not be flushed to disk yet. Flushes usually happen within seconds.
+- **Session expiration**: the `my.uscis.gov` session expires after a few hours of inactivity. When that happens the case is marked `cookie_expired: true` until you reopen the profile and sign in again.
 
 ---
 
-## Privacidade
+## Privacy
 
-Todos os dados ficam locais. Nada é enviado para fora além das próprias requests à USCIS. O `.gitignore` exclui:
+All data stays local. Nothing is sent anywhere outside of the requests to USCIS itself. `.gitignore` excludes:
 
-- `config.json` (nomes + receipts)
-- `data/` (snapshots completos)
-- `dashboard.html` (renderiza os dados)
+- `config.json` (names + receipts)
+- `data/` (full snapshots)
+- `dashboard.html` (which renders the data)
