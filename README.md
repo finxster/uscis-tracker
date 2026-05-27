@@ -47,13 +47,13 @@ cp config.example.json config.json
 ```json
 {
   "cases": [
-    { "name": "Alice I-485", "receipt": "IOE0936674431" },
-    { "name": "Bob EAD",     "receipt": "IOE0936674428" }
+    { "name": "Sam I-485",    "receipt": "IOE0936674431" },
+    { "name": "Jordan EAD",   "receipt": "IOE0936674428" }
   ]
 }
 ```
 
-- `name`: free-form label shown in the dashboard. Use a consistent prefix per owner (e.g. "Alice", "Bob", "Carol") — the `setup` command uses it to group cases.
+- `name`: free-form label shown in the dashboard. Use a consistent prefix per owner (e.g. "Sam", "Jordan", "Pat") — the `setup` command uses it to group cases.
 - `receipt`: full receipt number starting with `IOE`.
 
 > `config.json` is in `.gitignore` and is never committed.
@@ -62,7 +62,7 @@ cp config.example.json config.json
 
 For each USCIS account you want to monitor:
 
-1. In Chrome: `chrome://settings/manageProfile` → **Add** → name it (e.g. "Bob").
+1. In Chrome: `chrome://settings/manageProfile` → **Add** → name it (e.g. "Jordan").
 2. Open `https://my.uscis.gov` inside that profile and sign in fully (including login.gov if applicable).
 3. Confirm that `/account/applicant` shows the cases for that account.
 
@@ -78,17 +78,17 @@ Example output:
 
 ```
 Found 2 Chrome profiles:
-  Default         Alice   alice@gmail.com
-  Profile 1       Bob     bob@gmail.com
+  Default         Sam      sam@gmail.com
+  Profile 1       Jordan   jordan@gmail.com
 
 Testing access to 6 cases...
 
-  ✓ Alice I-485     IOE0936674431  →  Default
-  ✓ Bob EAD         IOE0936674428  →  Profile 1
-  ✗ Carol I-485     IOE0936674434  →  no authorized profile
+  ✓ Sam I-485      IOE0936674431  →  Default
+  ✓ Jordan EAD     IOE0936674428  →  Profile 1
+  ✗ Pat I-485      IOE0936674434  →  no authorized profile
 
-Account 'Carol' (1 case): suggested profile = "Carol"
-   Open Chrome in profile 'Carol' now? [y/N]
+Account 'Pat' (1 case): suggested profile = "Pat"
+   Open Chrome in profile 'Pat' now? [y/N]
 ```
 
 For unmapped cases, `setup` offers to open Chrome in a new profile so you can sign in. After signing in, run `setup` again until everything shows `✓`.
@@ -106,9 +106,9 @@ Output:
 ```
 [09:30:01] Chrome profiles found: Default, Profile 1
 [09:30:01] Checking 6 cases...
-[09:30:02] ✓ Alice I-485 (IOE0936674431) [Default] — no change
-[09:30:03] 🔔 Bob EAD (IOE0936674428) [Profile 1] — SILENT UPDATE DETECTED
-[09:30:04] ⚠️  Carol I-485 (IOExxxxxxxxx) [Default, Profile 1] — no authorized profile
+[09:30:02] ✓ Sam I-485 (IOE0936674431) [Default] — no change
+[09:30:03] 🔔 Jordan EAD (IOE0936674428) [Profile 1] — SILENT UPDATE DETECTED
+[09:30:04] ⚠️  Pat I-485 (IOExxxxxxxxx) [Default, Profile 1] — no authorized profile
 [09:30:05] Dashboard written: dashboard.html
 ```
 
@@ -148,7 +148,7 @@ uscis-tracker/
 ```json
 {
   "receipt": "IOE0936674431",
-  "name": "Alice I-485",
+  "name": "Sam I-485",
   "last_sha": "a3f9b2...",
   "cookie_expired": false,
   "profile": "Default",
