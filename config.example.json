@@ -1,0 +1,7 @@
+{
+  "cases": [
+    { "name": "Pessoa1 I-485", "receipt": "IOExxxxxxxxx" },
+    { "name": "Pessoa1 EAD",   "receipt": "IOExxxxxxxxx" },
+    { "name": "Pessoa2 I-485", "receipt": "IOExxxxxxxxx" }
+  ]
+}

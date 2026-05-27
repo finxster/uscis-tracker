@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.env
+.DS_Store
+.idea/
+.vscode/
+
+# Local data — contains USCIS case details
+data/
+dashboard.html
+config.json
