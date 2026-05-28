@@ -134,6 +134,16 @@ Open the dashboard:
 open dashboard.html
 ```
 
+### Mask mode (for screenshots / sharing)
+
+The dashboard has a **Mask** toggle in the top right. When on:
+
+- Owners become `Person A`, `Person B`, … (stable across reloads via `localStorage`).
+- Receipts collapse to `IOE•••••XXXX` (last 4 preserved so you can still cross-reference).
+- Any `IOE…` substring inside the status narrative tooltip is masked too.
+
+Useful for screenshots. Note this only masks the **rendered** view — the raw `dashboard.html` source still contains the receipts in the embedded JSON payload, so don't share the file itself.
+
 ### Frequency
 
 Once a day (in the morning ET — when USCIS actually moves cases) is more than enough. Two requests per case with small backoffs stays well below WAF radar.

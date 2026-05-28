@@ -547,15 +547,20 @@ def collect_dashboard_data(cases: list[dict]) -> list[dict]:
         path = DATA_DIR / f"{receipt}.json"
         if path.exists():
             with path.open("r", encoding="utf-8") as f:
-                out.append(json.load(f))
+                entry = json.load(f)
         else:
-            out.append({
+            entry = {
                 "receipt": receipt,
                 "name": case.get("name"),
                 "last_sha": None,
                 "cookie_expired": False,
                 "checks": [],
-            })
+            }
+        # Annotate with config-level owner/label so the dashboard can mask
+        # independently of the composed name string stored in history files.
+        entry["owner"] = case.get("owner") or ""
+        entry["label"] = case.get("label") or ""
+        out.append(entry)
     return out
 
 
@@ -792,6 +797,19 @@ DASHBOARD_TEMPLATE = r"""<!DOCTYPE html>
     padding: 1px 6px;
     color: var(--text);
   }
+  button.mask-toggle {
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    padding: 6px 12px;
+    cursor: pointer;
+  }
+  button.mask-toggle:hover { border-color: var(--accent); color: var(--accent); }
+  button.mask-toggle.on { border-color: var(--accent); color: var(--accent); background: rgba(255, 181, 71, 0.08); }
 </style>
 </head>
 <body>
@@ -800,6 +818,7 @@ DASHBOARD_TEMPLATE = r"""<!DOCTYPE html>
     <h1>USCIS Silent Update Tracker</h1>
     <div class="meta">Last run: <span id="generated">__GENERATED__</span><span id="globalBadge"></span></div>
   </div>
+  <button id="maskBtn" class="mask-toggle" type="button">Mask: Off</button>
 </header>
 <div id="cookieBanner"></div>
 <main id="cards"></main>
@@ -811,6 +830,49 @@ DASHBOARD_TEMPLATE = r"""<!DOCTYPE html>
 
 <script>
 const CASES = __DATA__;
+
+let MASKED = localStorage.getItem('uscis_masked') === '1';
+
+const OWNER_LETTERS = (() => {
+  const seen = [];
+  for (const c of CASES) {
+    const o = (c.owner || '').trim();
+    if (o && !seen.includes(o)) seen.push(o);
+  }
+  const map = {};
+  seen.forEach((o, i) => {
+    map[o] = String.fromCharCode(65 + (i % 26));
+  });
+  return map;
+})();
+
+function maskOwner(owner) {
+  if (!MASKED) return owner || '';
+  const letter = OWNER_LETTERS[owner] || '?';
+  return `Person ${letter}`;
+}
+
+function maskReceipt(r) {
+  if (!MASKED || !r) return r || '';
+  if (r.length <= 7) return r.replace(/./g, '•');
+  const head = r.substring(0, 3);
+  const tail = r.substring(r.length - 4);
+  return `${head}${'•'.repeat(r.length - 7)}${tail}`;
+}
+
+function maskName(caseData) {
+  if (!MASKED) return caseData.name || '—';
+  const owner = caseData.owner ? maskOwner(caseData.owner) : '';
+  const label = caseData.label || '';
+  if (owner && label) return `${owner} ${label}`;
+  return owner || label || '—';
+}
+
+function maskText(s) {
+  // Replace any IOE+digits occurrences inside free-form text (e.g. statusText).
+  if (!MASKED || !s) return s || '';
+  return s.replace(/IOE\d+/g, m => maskReceipt(m));
+}
 
 function fmtTs(s) {
   if (!s) return '—';
@@ -933,14 +995,15 @@ function renderCard(caseData) {
     ? statusSnap.historicalCaseStatuses.length : 0;
 
   const statusDisplay = statusTitle || statusFallback;
-  const statusTooltip = statusTextRaw ? ` title="${escapeHtml(statusTextRaw)}"` : '';
+  const statusTooltipText = statusTextRaw ? maskText(statusTextRaw) : '';
+  const statusTooltip = statusTooltipText ? ` title="${escapeHtml(statusTooltipText)}"` : '';
 
   return `
     <article class="card">
       <div class="card-head">
         <div>
-          <div class="card-name">${escapeHtml(caseData.name || '—')}</div>
-          <div class="card-receipt">${escapeHtml(caseData.receipt)}${formType ? ' · ' + escapeHtml(formType) : ''}</div>
+          <div class="card-name">${escapeHtml(maskName(caseData))}</div>
+          <div class="card-receipt">${escapeHtml(maskReceipt(caseData.receipt))}${formType ? ' · ' + escapeHtml(formType) : ''}</div>
         </div>
         <div>${renderBadge(caseData)}</div>
       </div>
@@ -969,14 +1032,26 @@ function render() {
   if (cookieExpired) {
     document.getElementById('cookieBanner').innerHTML =
       '<div class="cookie-banner">⚠ Session expired — sign in to my.uscis.gov in Chrome and re-run the script</div>';
+  } else {
+    document.getElementById('cookieBanner').innerHTML = '';
   }
   const updatesCount = CASES.filter(c => changedSinceLastRun(c.checks || [])).length;
-  if (updatesCount > 0) {
-    document.getElementById('globalBadge').innerHTML =
-      ` <span class="global-badge">${updatesCount} update${updatesCount > 1 ? 's' : ''} since last check</span>`;
-  }
+  const globalBadge = document.getElementById('globalBadge');
+  globalBadge.innerHTML = updatesCount > 0
+    ? ` <span class="global-badge">${updatesCount} update${updatesCount > 1 ? 's' : ''} since last check</span>`
+    : '';
   document.getElementById('cards').innerHTML = CASES.map(renderCard).join('');
+
+  const btn = document.getElementById('maskBtn');
+  btn.textContent = MASKED ? 'Mask: On' : 'Mask: Off';
+  btn.classList.toggle('on', MASKED);
 }
+
+document.getElementById('maskBtn').addEventListener('click', () => {
+  MASKED = !MASKED;
+  localStorage.setItem('uscis_masked', MASKED ? '1' : '0');
+  render();
+});
 
 render();
 </script>
