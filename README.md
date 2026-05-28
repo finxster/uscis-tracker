@@ -9,9 +9,13 @@ No server, no database, no separate auth — it reuses your Chrome session cooki
 ## How it works
 
 1. Reads Chrome cookies straight from disk (via `browser_cookie3`).
-2. For each configured case, fires `GET https://my.uscis.gov/account/case-service/api/cases/{receipt}`.
-3. Computes SHA-256 over `updatedAt`, `status`, `events`, `closed`, `actionRequired` — the fields that move when something real happens on the case.
-4. Compares to the SHA from the previous run. Any difference is a silent update.
+2. For each configured case, fires **two** requests:
+   - `GET https://my.uscis.gov/account/case-service/api/cases/{receipt}` — internal payload (events, status flags).
+   - `GET https://my.uscis.gov/account/case-service/api/case_status/{receipt}` — public-facing status (statusTitle, currentActionCode, narrative text, status history).
+3. Computes **two** independent SHA-256 hashes:
+   - Case hash: `updatedAt`, `status`, `events`, `closed`, `actionRequired`.
+   - Status hash: `statusTitle`, `currentActionCode`, `currentActionCodeDate`, `len(historicalCaseStatuses)`.
+4. A silent update fires when **either** hash changes — divergence between the two sources is itself a signal.
 5. Persists **every** check to `data/{receipt}.json` (nothing is ever discarded).
 6. Regenerates a self-contained `dashboard.html` (data + CSS + JS inline) — just open it in a browser.
 
@@ -46,15 +50,27 @@ cp config.example.json config.json
 
 ```json
 {
-  "cases": [
-    { "name": "Sam I-485",    "receipt": "IOE0936674431" },
-    { "name": "Jordan EAD",   "receipt": "IOE0936674428" }
+  "people": [
+    {
+      "name": "Sam",
+      "cases": [
+        { "label": "I-485", "receipt": "IOE0936674431" },
+        { "label": "EAD",   "receipt": "IOE0936674432" }
+      ]
+    },
+    {
+      "name": "Jordan",
+      "cases": [
+        { "label": "I-485", "receipt": "IOE0936674427" }
+      ]
+    }
   ]
 }
 ```
 
-- `name`: free-form label shown in the dashboard. Use a consistent prefix per owner (e.g. "Sam", "Jordan", "Pat") — the `setup` command uses it to group cases.
-- `receipt`: full receipt number starting with `IOE`.
+- `people[].name`: USCIS account owner. Cases under the same person share a Chrome profile, so `setup` probes only one case per person.
+- `cases[].label`: free-form tag shown in the dashboard (e.g. `I-485`, `EAD`, `AP`).
+- `cases[].receipt`: full receipt number starting with `IOE`.
 
 > `config.json` is in `.gitignore` and is never committed.
 
@@ -81,13 +97,13 @@ Found 2 Chrome profiles:
   Default         Sam      sam@gmail.com
   Profile 1       Jordan   jordan@gmail.com
 
-Testing access to 6 cases...
+Probing 1 representative case per person (3 person/people, 6 case[s])...
 
-  ✓ Sam I-485      IOE0936674431  →  Default
-  ✓ Jordan EAD     IOE0936674428  →  Profile 1
-  ✗ Pat I-485      IOE0936674434  →  no authorized profile
+  ✓ Sam    via IOE0936674431 (I-485)  →  Default    [mapped 2 case(s)]
+  ✓ Jordan via IOE0936674427 (I-485)  →  Profile 1  [mapped 3 case(s)]
+  ✗ Pat    → no authorized profile
 
-Account 'Pat' (1 case): suggested profile = "Pat"
+Account 'Pat' (1 case[s]): suggested profile = "Pat"
    Open Chrome in profile 'Pat' now? [y/N]
 ```
 
@@ -107,7 +123,7 @@ Output:
 [09:30:01] Chrome profiles found: Default, Profile 1
 [09:30:01] Checking 6 cases...
 [09:30:02] ✓ Sam I-485 (IOE0936674431) [Default] — no change
-[09:30:03] 🔔 Jordan EAD (IOE0936674428) [Profile 1] — SILENT UPDATE DETECTED
+[09:30:03] 🔔 Jordan EAD (IOE0936674428) [Profile 1] — 🔔 SILENT UPDATE (case+status)
 [09:30:04] ⚠️  Pat I-485 (IOExxxxxxxxx) [Default, Profile 1] — no authorized profile
 [09:30:05] Dashboard written: dashboard.html
 ```
@@ -120,7 +136,7 @@ open dashboard.html
 
 ### Frequency
 
-Once a day (in the morning ET — when USCIS actually moves cases) is more than enough. 6 requests with small backoffs stays well below WAF radar.
+Once a day (in the morning ET — when USCIS actually moves cases) is more than enough. Two requests per case with small backoffs stays well below WAF radar.
 
 ### Scheduling
 

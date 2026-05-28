@@ -1,7 +1,17 @@
 {
-  "cases": [
-    { "name": "Sam I-485",    "receipt": "IOExxxxxxxxx" },
-    { "name": "Sam EAD",      "receipt": "IOExxxxxxxxx" },
-    { "name": "Jordan I-485", "receipt": "IOExxxxxxxxx" }
+  "people": [
+    {
+      "name": "Sam",
+      "cases": [
+        { "label": "I-485", "receipt": "IOExxxxxxxxx" },
+        { "label": "EAD",   "receipt": "IOExxxxxxxxx" }
+      ]
+    },
+    {
+      "name": "Jordan",
+      "cases": [
+        { "label": "I-485", "receipt": "IOExxxxxxxxx" }
+      ]
+    }
   ]
 }

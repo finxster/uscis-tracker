@@ -33,6 +33,7 @@ DATA_DIR = ROOT / "data"
 DASHBOARD_PATH = ROOT / "dashboard.html"
 PROFILE_MAP_PATH = ROOT / "data" / "_profile_map.json"
 API_BASE = "https://my.uscis.gov/account/case-service/api/cases/"
+STATUS_API_BASE = "https://my.uscis.gov/account/case-service/api/case_status/"
 TIMEOUT = 20
 REQUEST_DELAY = 0.4  # politeness between requests
 
@@ -127,6 +128,24 @@ def load_config() -> dict:
         return json.load(f)
 
 
+def iter_cases(config: dict) -> list[dict]:
+    """Flatten config into [{owner, label, name, receipt}, ...]."""
+    out = []
+    for person in config.get("people", []):
+        owner = (person.get("name") or "").strip()
+        for c in person.get("cases", []):
+            label = (c.get("label") or "").strip()
+            receipt = (c.get("receipt") or "").strip()
+            display = f"{owner} {label}".strip() if label else owner
+            out.append({
+                "owner": owner,
+                "label": label,
+                "name": display,
+                "receipt": receipt,
+            })
+    return out
+
+
 def load_history(receipt: str) -> dict:
     path = DATA_DIR / f"{receipt}.json"
     if not path.exists():
@@ -160,26 +179,44 @@ def compute_sha(data: dict) -> str:
     return hashlib.sha256(serialized.encode()).hexdigest()
 
 
+def compute_status_sha(data: dict) -> str:
+    relevant = {
+        "statusTitle": data.get("statusTitle"),
+        "currentActionCode": data.get("currentActionCode"),
+        "currentActionCodeDate": data.get("currentActionCodeDate"),
+        "historicalLen": len(data.get("historicalCaseStatuses") or []),
+    }
+    serialized = json.dumps(relevant, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(serialized.encode()).hexdigest()
+
+
 def looks_like_valid_case(data: Any) -> bool:
     if not isinstance(data, dict):
         return False
     return bool(data.get("receiptNumber") or data.get("formType"))
 
 
-def fetch_case(receipt: str, cookiejar) -> tuple[dict | None, str | None]:
-    """Return (snapshot, error). error is None on success, or a short tag."""
-    url = API_BASE + receipt
-    headers = {
-        "Accept": "application/json",
-        "Referer": "https://my.uscis.gov/",
-        "User-Agent": (
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/126.0.0.0 Safari/537.36"
-        ),
-    }
+def looks_like_valid_status(data: Any) -> bool:
+    if not isinstance(data, dict):
+        return False
+    return bool(data.get("statusTitle") or data.get("currentActionCode") or data.get("formType"))
+
+
+_HTTP_HEADERS = {
+    "Accept": "application/json",
+    "Referer": "https://my.uscis.gov/",
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/126.0.0.0 Safari/537.36"
+    ),
+}
+
+
+def _get_json(url: str, cookiejar) -> tuple[Any, str | None]:
+    """Low-level GET that unwraps {"data": ...}. Returns (payload, error_tag)."""
     try:
-        resp = requests.get(url, headers=headers, cookies=cookiejar, timeout=TIMEOUT)
+        resp = requests.get(url, headers=_HTTP_HEADERS, cookies=cookiejar, timeout=TIMEOUT)
     except requests.RequestException as e:
         return None, f"network:{e.__class__.__name__}"
 
@@ -195,13 +232,27 @@ def fetch_case(receipt: str, cookiejar) -> tuple[dict | None, str | None]:
     except ValueError:
         return None, "auth"  # USCIS returns HTML login page when session dies
 
-    # USCIS wraps the payload as {"data": {...}}
     if isinstance(data, dict) and "data" in data and isinstance(data["data"], dict):
         data = data["data"]
+    return data, None
 
+
+def fetch_case(receipt: str, cookiejar) -> tuple[dict | None, str | None]:
+    """Return (snapshot, error). error is None on success, or a short tag."""
+    data, err = _get_json(API_BASE + receipt, cookiejar)
+    if err:
+        return None, err
     if not looks_like_valid_case(data):
         return None, "auth"
+    return data, None
 
+
+def fetch_case_status(receipt: str, cookiejar) -> tuple[dict | None, str | None]:
+    data, err = _get_json(STATUS_API_BASE + receipt, cookiejar)
+    if err:
+        return None, err
+    if not looks_like_valid_status(data):
+        return None, "auth"
     return data, None
 
 
@@ -254,7 +305,7 @@ def try_case_against_profiles(
 
 def cmd_check() -> int:
     config = load_config()
-    cases = config.get("cases", [])
+    cases = iter_cases(config)
     if not cases:
         print("ERROR: no cases configured in config.json")
         return 1
@@ -315,20 +366,51 @@ def cmd_check() -> int:
 
         pmap[receipt] = used
         sha = compute_sha(snapshot)
-        changed = history.get("last_sha") is not None and sha != history["last_sha"]
+        case_changed = history.get("last_sha") is not None and sha != history["last_sha"]
+
+        # Second source: case_status (rich narrative + currentActionCode).
+        # Same profile that authorized /cases/ should authorize this too.
+        cj_used = loader.get(used)
+        status_snapshot, status_err = fetch_case_status(receipt, cj_used)
+        time.sleep(REQUEST_DELAY)
+        status_sha = compute_status_sha(status_snapshot) if status_snapshot else None
+        status_changed = (
+            status_sha is not None
+            and history.get("last_status_sha") is not None
+            and status_sha != history["last_status_sha"]
+        )
+
+        changed = case_changed or status_changed
 
         history["cookie_expired"] = False
         history["profile"] = used
         history["checks"].append({
-            "timestamp": now_iso(), "sha": sha, "changed": changed,
-            "cookie_expired": False, "profile": used, "snapshot": snapshot,
+            "timestamp": now_iso(),
+            "sha": sha,
+            "status_sha": status_sha,
+            "changed": changed,
+            "case_changed": case_changed,
+            "status_changed": status_changed,
+            "cookie_expired": False,
+            "profile": used,
+            "snapshot": snapshot,
+            "status_snapshot": status_snapshot,
+            "status_error": status_err,
         })
         history["last_sha"] = sha
+        if status_sha is not None:
+            history["last_status_sha"] = status_sha
         save_history(history)
 
-        marker = "🔔 SILENT UPDATE DETECTED" if changed else (
-            "first check" if len(history["checks"]) == 1 else "no change"
-        )
+        if changed:
+            which = []
+            if case_changed:
+                which.append("case")
+            if status_changed:
+                which.append("status")
+            marker = f"🔔 SILENT UPDATE ({'+'.join(which)})"
+        else:
+            marker = "first check" if len(history["checks"]) == 1 else "no change"
         log(f"{'🔔' if changed else '✓'} {name} ({receipt}) [{used}] — {marker}")
 
     save_profile_map(pmap)
@@ -358,7 +440,7 @@ def launch_chrome_profile(profile_dir: str) -> None:
 
 def cmd_setup() -> int:
     config = load_config()
-    cases = config.get("cases", [])
+    people = config.get("people", [])
     DATA_DIR.mkdir(exist_ok=True)
 
     profiles = discover_chrome_profiles()
@@ -372,47 +454,72 @@ def cmd_setup() -> int:
     loader = ProfileCookieLoader(profiles)
     pmap = load_profile_map()
 
-    print(f"\nTesting access to {len(cases)} case(s)...\n")
-    unmapped = []
-    for case in cases:
-        name = case["name"]
-        receipt = case["receipt"]
-        # Probe every profile fresh (ignore cache for setup)
+    total_cases = sum(len(p.get("cases", [])) for p in people)
+    print(f"\nProbing 1 representative case per person ({len(people)} person/people, {total_cases} case[s])...\n")
+
+    unmapped_people = []
+    for person in people:
+        owner = (person.get("name") or "Account").strip()
+        cases = person.get("cases", [])
+        if not cases:
+            continue
+
+        mapped_profile = None
+        last_err = None
         order = [p["dir"] for p in profiles]
-        snapshot, err, used = try_case_against_profiles(receipt, order, loader)
-        if snapshot is not None:
-            pmap[receipt] = used
-            print(f"  ✓ {name:30s} {receipt}  →  {used}")
-        else:
-            print(f"  ✗ {name:30s} {receipt}  →  no authorized profile")
-            unmapped.append(case)
+
+        # Try cases in order: usually the first works, but if a receipt is
+        # invalid/closed (404) we want to try the next one from the same owner
+        # before declaring the whole group unmapped.
+        for case in cases:
+            receipt = (case.get("receipt") or "").strip()
+            if not receipt:
+                continue
+            snapshot, err, used = try_case_against_profiles(receipt, order, loader)
+            if snapshot is not None:
+                mapped_profile = used
+                for c in cases:
+                    r = (c.get("receipt") or "").strip()
+                    if r:
+                        pmap[r] = used
+                label = (case.get("label") or "").strip()
+                via = f"{receipt}" + (f" ({label})" if label else "")
+                print(f"  ✓ {owner:14s} via {via}  →  {used}  [mapped {len(cases)} case(s)]")
+                break
+            last_err = err
+            # auth/http:500 means no profile is authorized for this owner at all;
+            # trying sibling receipts won't change that. Stop early.
+            if err in ("auth", "http:500"):
+                break
+
+        if mapped_profile is None:
+            tag = f" (last error: {last_err})" if last_err and last_err != "auth" else ""
+            print(f"  ✗ {owner:14s} → no authorized profile{tag}")
+            unmapped_people.append(person)
 
     save_profile_map(pmap)
 
-    if not unmapped:
-        print("\nAll cases mapped. Run: python check.py")
+    if not unmapped_people:
+        print("\nAll people mapped. Run: python check.py")
         return 0
 
-    # Group unmapped by owner (first word of name)
-    groups: dict[str, list[dict]] = {}
-    for case in unmapped:
-        owner = case["name"].split()[0] if case["name"] else "Account"
-        groups.setdefault(owner, []).append(case)
-
-    print(f"\n{len(unmapped)} case(s) without an authorized profile.")
+    print(f"\n{len(unmapped_people)} person/people without an authorized profile.")
     print("Suggestion: one Chrome profile per USCIS account.\n")
 
     existing_dirs = {p["dir"] for p in profiles}
-    for owner, items in groups.items():
-        # Suggest a profile name that doesn't exist yet
+    for person in unmapped_people:
+        owner = (person.get("name") or "Account").strip()
+        cases = person.get("cases", [])
         suggested = owner
         i = 2
         while suggested in existing_dirs:
             suggested = f"{owner}{i}"
             i += 1
-        print(f"  Account '{owner}' ({len(items)} case[s]): suggested profile = \"{suggested}\"")
-        for c in items:
-            print(f"     • {c['name']} ({c['receipt']})")
+        print(f"  Account '{owner}' ({len(cases)} case[s]): suggested profile = \"{suggested}\"")
+        for c in cases:
+            label = (c.get("label") or "").strip()
+            tag = f" — {label}" if label else ""
+            print(f"     • {c.get('receipt', '')}{tag}")
         ans = input(f"     Open Chrome in profile '{suggested}' now? [y/N] ").strip().lower()
         if ans == "y":
             launch_chrome_profile(suggested)
@@ -771,9 +878,18 @@ function renderHistory(checks) {
     const cls = c.error ? 'error' : (c.changed ? 'changed' : '');
     const sha = c.sha ? c.sha.substring(0, 8) : '—';
     let mark;
-    if (c.error) mark = `<span class="pill">${escapeHtml(c.error)}</span>`;
-    else if (c.changed) mark = '<span class="pill">CHANGED</span>';
-    else mark = '·';
+    if (c.error) {
+      mark = `<span class="pill">${escapeHtml(c.error)}</span>`;
+    } else if (c.changed) {
+      // For older entries without case_changed/status_changed fields, fall back to CHANGED.
+      const tags = [];
+      if (c.case_changed) tags.push('CASE');
+      if (c.status_changed) tags.push('STATUS');
+      const label = tags.length ? tags.join('+') : 'CHANGED';
+      mark = `<span class="pill">${label}</span>`;
+    } else {
+      mark = '·';
+    }
     return `<tr class="${cls}"><td>${escapeHtml(fmtTs(c.timestamp))}</td><td>${sha}</td><td>${mark}</td></tr>`;
   }).join('');
   return `<table class="history-table">
@@ -782,15 +898,42 @@ function renderHistory(checks) {
   </table>`;
 }
 
+function stripHtml(s) {
+  if (!s) return '';
+  const div = document.createElement('div');
+  div.innerHTML = s;
+  return (div.textContent || div.innerText || '').replace(/\s+/g, ' ').trim();
+}
+
+function lastStatusSnapshot(checks) {
+  for (let i = checks.length - 1; i >= 0; i--) {
+    if (checks[i].status_snapshot) return checks[i].status_snapshot;
+  }
+  return null;
+}
+
 function renderCard(caseData) {
   const last = lastSuccessCheck(caseData.checks || []);
   const snap = last ? last.snapshot : null;
-  const status = snap ? (snap.statusText || snap.status || '—') : '—';
+  const statusSnap = lastStatusSnapshot(caseData.checks || []);
+
+  // Prefer the rich title from case_status; fall back to the /cases/ status.
+  const statusTitle = statusSnap ? statusSnap.statusTitle : null;
+  const statusFallback = snap ? (snap.statusText || snap.status || '—') : '—';
   const subStatus = snap ? (snap.subStatusText || '') : '';
   const updatedAt = snap ? (snap.updatedAt || snap.lastUpdatedAt || '') : '';
-  const formType = snap ? (snap.formType || '') : '';
+  const formType = (snap && snap.formType) || (statusSnap && statusSnap.formType) || '';
   const actionRequired = snap && snap.actionRequired;
   const closed = snap && snap.closed;
+
+  const actionCode = statusSnap ? statusSnap.currentActionCode : null;
+  const actionDate = statusSnap ? statusSnap.currentActionCodeDate : null;
+  const statusTextRaw = statusSnap ? stripHtml(statusSnap.statusText) : '';
+  const histLen = statusSnap && Array.isArray(statusSnap.historicalCaseStatuses)
+    ? statusSnap.historicalCaseStatuses.length : 0;
+
+  const statusDisplay = statusTitle || statusFallback;
+  const statusTooltip = statusTextRaw ? ` title="${escapeHtml(statusTextRaw)}"` : '';
 
   return `
     <article class="card">
@@ -802,8 +945,10 @@ function renderCard(caseData) {
         <div>${renderBadge(caseData)}</div>
       </div>
       <dl class="field-grid">
-        <dt>Status</dt><dd>${escapeHtml(status)}${subStatus ? ' <span style="color:var(--muted)">· ' + escapeHtml(subStatus) + '</span>' : ''}</dd>
+        <dt>Status</dt><dd${statusTooltip} style="cursor: ${statusTextRaw ? 'help' : 'default'}">${escapeHtml(statusDisplay)}${subStatus ? ' <span style="color:var(--muted)">· ' + escapeHtml(subStatus) + '</span>' : ''}</dd>
+        ${actionCode ? `<dt>Action</dt><dd class="mono" style="font-size:12px">${escapeHtml(actionCode)}${actionDate ? ' <span style="color:var(--muted)">@ ' + escapeHtml(fmtTs(actionDate)) + '</span>' : ''}</dd>` : ''}
         <dt>Updated</dt><dd class="mono" style="font-size:12px">${escapeHtml(fmtTs(updatedAt))}</dd>
+        ${histLen ? `<dt>History</dt><dd class="mono" style="font-size:12px">${histLen} prior status${histLen > 1 ? 'es' : ''}</dd>` : ''}
         ${actionRequired ? '<dt>Flag</dt><dd style="color:var(--accent)">Action Required</dd>' : ''}
         ${closed ? '<dt>Flag</dt><dd style="color:var(--muted)">Closed</dd>' : ''}
       </dl>
