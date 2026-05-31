@@ -921,13 +921,13 @@ function renderEvents(events) {
     return '<div class="empty">No events</div>';
   }
   const sorted = [...events].sort((a, b) => {
-    const ta = a.createdAt || a.timestamp || '';
-    const tb = b.createdAt || b.timestamp || '';
+    const ta = a.createdAtTimestamp || a.createdAt || a.timestamp || '';
+    const tb = b.createdAtTimestamp || b.createdAt || b.timestamp || '';
     return tb.localeCompare(ta);
   }).slice(0, 5);
   return '<ul>' + sorted.map(ev => {
     const code = ev.code || ev.eventCode || ev.type || '?';
-    const ts = ev.createdAt || ev.timestamp || '';
+    const ts = ev.createdAtTimestamp || ev.createdAt || ev.timestamp || '';
     return `<li><span>${escapeHtml(code)}</span><span class="ts">${escapeHtml(fmtTs(ts))}</span></li>`;
   }).join('') + '</ul>';
 }
@@ -983,7 +983,7 @@ function renderCard(caseData) {
   const statusTitle = statusSnap ? statusSnap.statusTitle : null;
   const statusFallback = snap ? (snap.statusText || snap.status || '—') : '—';
   const subStatus = snap ? (snap.subStatusText || '') : '';
-  const updatedAt = snap ? (snap.updatedAt || snap.lastUpdatedAt || '') : '';
+  const updatedAt = snap ? (snap.updatedAtTimestamp || snap.lastUpdatedAtTimestamp || snap.updatedAt || snap.lastUpdatedAt || '') : '';
   const formType = (snap && snap.formType) || (statusSnap && statusSnap.formType) || '';
   const actionRequired = snap && snap.actionRequired;
   const closed = snap && snap.closed;
