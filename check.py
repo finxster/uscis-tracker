@@ -691,6 +691,25 @@ DASHBOARD_TEMPLATE = r"""<!DOCTYPE html>
   .badge.update { color: var(--accent); animation: pulse 1.6s infinite; }
   .badge.err { color: var(--err); }
   .badge.idle { color: var(--muted); }
+  .chk-group-summary td { cursor: pointer; color: var(--muted); }
+  .chk-group-summary:hover td { color: var(--text); }
+  tr.chk-changed { cursor: pointer; }
+  tr.chk-changed:hover td { background: rgba(255, 181, 71, 0.08); }
+  tr.chk-changed td:last-child::after { content: ' ⤢'; font-size: 9px; opacity: 0.6; }
+  #diff-modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.78); z-index: 100; overflow: auto; padding: 40px 16px; }
+  #diff-modal-inner { margin: 0 auto; max-width: 860px; background: var(--panel); border: 1px solid var(--border); padding: 24px; }
+  #diff-modal-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px; }
+  #diff-modal-title { margin: 0; font-size: 13px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--accent); font-weight: 600; font-family: 'IBM Plex Mono', monospace; }
+  #diff-modal-close { background: none; border: 1px solid var(--border); color: var(--muted); font-size: 14px; cursor: pointer; padding: 2px 8px; font-family: 'IBM Plex Mono', monospace; }
+  #diff-modal-close:hover { color: var(--text); border-color: var(--text); }
+  .diff-section-title { margin: 16px 0 6px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); font-weight: 500; border-bottom: 1px solid var(--border); padding-bottom: 4px; }
+  table.diff-table { width: 100%; border-collapse: collapse; font-family: 'IBM Plex Mono', monospace; font-size: 11px; }
+  table.diff-table th, table.diff-table td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--border); word-break: break-all; }
+  table.diff-table th { color: var(--muted); font-weight: 500; text-transform: uppercase; letter-spacing: 0.06em; }
+  table.diff-table .d-sign { width: 16px; text-align: center; }
+  table.diff-table .d-key { color: var(--muted); width: 200px; white-space: nowrap; }
+  .diff-old { color: var(--err); }
+  .diff-new { color: var(--ok); }
   @keyframes pulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.45; }
@@ -808,6 +827,7 @@ DASHBOARD_TEMPLATE = r"""<!DOCTYPE html>
     padding: 6px 12px;
     cursor: pointer;
   }
+  .toolbar { display: flex; gap: 8px; flex-wrap: wrap; }
   button.mask-toggle:hover { border-color: var(--accent); color: var(--accent); }
   button.mask-toggle.on { border-color: var(--accent); color: var(--accent); background: rgba(255, 181, 71, 0.08); }
 </style>
@@ -818,9 +838,22 @@ DASHBOARD_TEMPLATE = r"""<!DOCTYPE html>
     <h1>USCIS Silent Update Tracker</h1>
     <div class="meta">Last run: <span id="generated">__GENERATED__</span><span id="globalBadge"></span></div>
   </div>
-  <button id="maskBtn" class="mask-toggle" type="button">Mask: Off</button>
+  <div class="toolbar">
+    <button id="hideAuthBtn" class="mask-toggle" type="button">Auth errors: Shown</button>
+    <button id="hideUnchangedBtn" class="mask-toggle" type="button">Unchanged: Shown</button>
+    <button id="maskBtn" class="mask-toggle" type="button">Mask: Off</button>
+  </div>
 </header>
 <div id="cookieBanner"></div>
+<div id="diff-modal">
+  <div id="diff-modal-inner">
+    <div id="diff-modal-header">
+      <h2 id="diff-modal-title"></h2>
+      <button id="diff-modal-close" onclick="document.getElementById('diff-modal').style.display='none'">✕ close</button>
+    </div>
+    <div id="diff-modal-content"></div>
+  </div>
+</div>
 <main id="cards"></main>
 <footer>
   Refresh cookie: sign in to <code>my.uscis.gov</code> in Chrome &nbsp;·&nbsp;
@@ -832,6 +865,8 @@ DASHBOARD_TEMPLATE = r"""<!DOCTYPE html>
 const CASES = __DATA__;
 
 let MASKED = localStorage.getItem('uscis_masked') === '1';
+let HIDE_AUTH = localStorage.getItem('uscis_hide_auth') === '1';
+let HIDE_UNCHANGED = localStorage.getItem('uscis_hide_unchanged') === '1';
 
 const OWNER_LETTERS = (() => {
   const seen = [];
@@ -855,9 +890,10 @@ function maskOwner(owner) {
 function maskReceipt(r) {
   if (!MASKED || !r) return r || '';
   if (r.length <= 7) return r.replace(/./g, '•');
-  const head = r.substring(0, 3);
-  const tail = r.substring(r.length - 4);
-  return `${head}${'•'.repeat(r.length - 7)}${tail}`;
+  // Keep the leading block (IOE + 5-digit block, which is public) and mask the
+  // unique trailing digits.
+  const head = r.substring(0, 8);
+  return `${head}${'•'.repeat(r.length - 8)}`;
 }
 
 function maskName(caseData) {
@@ -932,28 +968,80 @@ function renderEvents(events) {
   }).join('') + '</ul>';
 }
 
-function renderHistory(checks) {
+// Each item is { c, i } where i is the index in the full checks array.
+function renderCheckRow(item, receipt) {
+  const c = item.c;
+  const cls = c.error ? 'error' : (c.changed ? 'changed' : '');
+  const sha = c.sha ? c.sha.substring(0, 8) : '—';
+  let mark, clickable = '';
+  if (c.error) {
+    mark = `<span class="pill">${escapeHtml(c.error)}</span>`;
+  } else if (c.changed) {
+    const tags = [];
+    if (c.case_changed) tags.push('CASE');
+    if (c.status_changed) tags.push('STATUS');
+    mark = `<span class="pill">${tags.length ? tags.join('+') : 'CHANGED'}</span>`;
+    clickable = ` class="${cls} chk-changed" onclick="showDiff('${receipt}', ${item.i})" title="Click to see what changed"`;
+  } else {
+    mark = '·';
+  }
+  const trAttrs = clickable || (cls ? ` class="${cls}"` : '');
+  return `<tr${trAttrs}><td>${escapeHtml(fmtTs(c.timestamp))}</td><td>${sha}</td><td>${mark}</td></tr>`;
+}
+
+let _grpCounter = 0;
+
+function renderHistory(checks, receipt) {
   if (!checks || !checks.length) {
     return '<div class="empty">No checks yet</div>';
   }
-  const rows = [...checks].slice(-20).reverse().map(c => {
-    const cls = c.error ? 'error' : (c.changed ? 'changed' : '');
-    const sha = c.sha ? c.sha.substring(0, 8) : '—';
-    let mark;
-    if (c.error) {
-      mark = `<span class="pill">${escapeHtml(c.error)}</span>`;
-    } else if (c.changed) {
-      // For older entries without case_changed/status_changed fields, fall back to CHANGED.
-      const tags = [];
-      if (c.case_changed) tags.push('CASE');
-      if (c.status_changed) tags.push('STATUS');
-      const label = tags.length ? tags.join('+') : 'CHANGED';
-      mark = `<span class="pill">${label}</span>`;
+  // Keep original indices so the diff can locate each check + its predecessor.
+  let recent = checks.map((c, i) => ({ c, i })).slice(-20).reverse();
+  if (HIDE_AUTH) {
+    recent = recent.filter(it => it.c.error !== 'auth');
+  }
+  if (HIDE_UNCHANGED) {
+    recent = recent.filter(it => it.c.error || it.c.changed);
+  }
+  if (!recent.length) {
+    return '<div class="empty">No checks match the current filters</div>';
+  }
+
+  // Group consecutive quiet (no-change, no-error) checks
+  const groups = [];
+  for (const item of recent) {
+    const isQuiet = !item.c.error && !item.c.changed;
+    const last = groups[groups.length - 1];
+    if (isQuiet && last && last.quiet) {
+      last.items.push(item);
     } else {
-      mark = '·';
+      groups.push({ quiet: isQuiet, items: [item] });
     }
-    return `<tr class="${cls}"><td>${escapeHtml(fmtTs(c.timestamp))}</td><td>${sha}</td><td>${mark}</td></tr>`;
+  }
+
+  const rows = groups.map(g => {
+    if (!g.quiet || g.items.length === 1) {
+      return g.items.map(it => renderCheckRow(it, receipt)).join('');
+    }
+    // Collapsed group: newest first (index 0), oldest last
+    const id = `cg${_grpCounter++}`;
+    const newest = g.items[0].c;
+    const oldest = g.items[g.items.length - 1].c;
+    const sha = newest.sha ? newest.sha.substring(0, 8) : '—';
+    const n = g.items.length;
+    const summary = `<tr class="chk-group-summary" onclick="toggleGroup('${id}')">` +
+      `<td>${escapeHtml(fmtTs(newest.timestamp))} <span style="font-size:10px">↩ ${escapeHtml(fmtTs(oldest.timestamp))}</span></td>` +
+      `<td>${sha}</td>` +
+      `<td><span class="pill" id="${id}-pill">▶ ${n} checks</span></td></tr>`;
+    const detail = g.items.map(it => {
+      const sha2 = it.c.sha ? it.c.sha.substring(0, 8) : '—';
+      return `<tr data-group="${id}" style="display:none">` +
+        `<td style="padding-left:20px;color:var(--muted)">${escapeHtml(fmtTs(it.c.timestamp))}</td>` +
+        `<td style="color:var(--muted)">${sha2}</td><td style="color:var(--muted)">·</td></tr>`;
+    }).join('');
+    return summary + detail;
   }).join('');
+
   return `<table class="history-table">
     <thead><tr><th>Timestamp</th><th>SHA</th><th>Change</th></tr></thead>
     <tbody>${rows}</tbody>
@@ -1021,11 +1109,102 @@ function renderCard(caseData) {
       </div>
       <div class="history">
         <h4>Checks (last 20)</h4>
-        ${renderHistory(caseData.checks)}
+        ${renderHistory(caseData.checks, caseData.receipt)}
       </div>
     </article>
   `;
 }
+
+function toggleGroup(id) {
+  const rows = document.querySelectorAll(`tr[data-group="${id}"]`);
+  const pill = document.getElementById(`${id}-pill`);
+  const n = rows.length;
+  const opening = n > 0 && rows[0].style.display === 'none';
+  rows.forEach(r => { r.style.display = opening ? '' : 'none'; });
+  if (pill) pill.textContent = opening ? `▼ ${n} checks` : `▶ ${n} checks`;
+}
+
+function flattenForDiff(obj, prefix) {
+  const out = {};
+  for (const k of Object.keys(obj || {})) {
+    const key = prefix ? prefix + '.' + k : k;
+    const v = obj[k];
+    if (v !== null && typeof v === 'object' && !Array.isArray(v)) {
+      Object.assign(out, flattenForDiff(v, key));
+    } else {
+      out[key] = JSON.stringify(v);
+    }
+  }
+  return out;
+}
+
+function buildDiffTable(oldSnap, newSnap, title) {
+  const oldFlat = flattenForDiff(oldSnap || {});
+  const newFlat = flattenForDiff(newSnap || {});
+  const allKeys = [...new Set([...Object.keys(oldFlat), ...Object.keys(newFlat)])].sort();
+  const diffs = allKeys
+    .filter(k => oldFlat[k] !== newFlat[k])
+    .map(k => ({ key: k, old: oldFlat[k], nw: newFlat[k] }));
+  const heading = `<div class="diff-section-title">${escapeHtml(title)}</div>`;
+  if (!diffs.length) return heading + '<div class="empty" style="margin-bottom:8px">No changes in this section</div>';
+  const rows = diffs.map(d => {
+    if (d.old === undefined) {
+      return `<tr><td class="d-sign" style="color:var(--ok)">+</td><td class="d-key">${escapeHtml(d.key)}</td><td class="diff-new">${escapeHtml(d.nw)}</td></tr>`;
+    } else if (d.nw === undefined) {
+      return `<tr><td class="d-sign" style="color:var(--err)">−</td><td class="d-key">${escapeHtml(d.key)}</td><td class="diff-old">${escapeHtml(d.old)}</td></tr>`;
+    } else {
+      return `<tr><td class="d-sign" style="color:var(--warn)">~</td><td class="d-key">${escapeHtml(d.key)}</td>` +
+        `<td><span class="diff-old">${escapeHtml(d.old)}</span> → <span class="diff-new">${escapeHtml(d.nw)}</span></td></tr>`;
+    }
+  }).join('');
+  return heading + `<table class="diff-table"><thead><tr><th></th><th>Field</th><th>Value</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+function showDiff(receipt, idx) {
+  const caseData = CASES.find(c => c.receipt === receipt);
+  if (!caseData || !caseData.checks) return;
+  const checks = caseData.checks;
+  const curr = checks[idx];
+  if (!curr) return;
+
+  // Find the most recent earlier check that carried a snapshot to compare against.
+  let prevCase = null, prevStatus = null;
+  for (let i = idx - 1; i >= 0; i--) {
+    if (!prevCase && checks[i].snapshot) prevCase = checks[i].snapshot;
+    if (!prevStatus && checks[i].status_snapshot) prevStatus = checks[i].status_snapshot;
+    if (prevCase && prevStatus) break;
+  }
+
+  const tags = [];
+  if (curr.case_changed) tags.push('CASE');
+  if (curr.status_changed) tags.push('STATUS');
+  const tagLabel = tags.length ? tags.join('+') : 'CHANGED';
+  document.getElementById('diff-modal-title').textContent =
+    `${caseData.name || receipt} · ${tagLabel} @ ${fmtTs(curr.timestamp)}`;
+
+  let content = '';
+  // Show case diff if this check changed the case (or older entries without flags).
+  const showCase = curr.case_changed || (curr.case_changed === undefined && curr.status_changed === undefined);
+  const showStatus = curr.status_changed;
+  if (showCase) {
+    content += buildDiffTable(prevCase, curr.snapshot || null, 'Case data');
+  }
+  if (showStatus) {
+    content += buildDiffTable(prevStatus, curr.status_snapshot || null, 'Status');
+  }
+  if (!content) {
+    content = '<div class="empty">No snapshot detail recorded for this check</div>';
+  }
+  document.getElementById('diff-modal-content').innerHTML = content;
+  document.getElementById('diff-modal').style.display = 'block';
+}
+
+document.getElementById('diff-modal').addEventListener('click', function(e) {
+  if (e.target === this) this.style.display = 'none';
+});
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') document.getElementById('diff-modal').style.display = 'none';
+});
 
 function render() {
   const cookieExpired = CASES.some(c => c.cookie_expired);
@@ -1045,11 +1224,31 @@ function render() {
   const btn = document.getElementById('maskBtn');
   btn.textContent = MASKED ? 'Mask: On' : 'Mask: Off';
   btn.classList.toggle('on', MASKED);
+
+  const authBtn = document.getElementById('hideAuthBtn');
+  authBtn.textContent = HIDE_AUTH ? 'Auth errors: Hidden' : 'Auth errors: Shown';
+  authBtn.classList.toggle('on', HIDE_AUTH);
+
+  const unchBtn = document.getElementById('hideUnchangedBtn');
+  unchBtn.textContent = HIDE_UNCHANGED ? 'Unchanged: Hidden' : 'Unchanged: Shown';
+  unchBtn.classList.toggle('on', HIDE_UNCHANGED);
 }
 
 document.getElementById('maskBtn').addEventListener('click', () => {
   MASKED = !MASKED;
   localStorage.setItem('uscis_masked', MASKED ? '1' : '0');
+  render();
+});
+
+document.getElementById('hideAuthBtn').addEventListener('click', () => {
+  HIDE_AUTH = !HIDE_AUTH;
+  localStorage.setItem('uscis_hide_auth', HIDE_AUTH ? '1' : '0');
+  render();
+});
+
+document.getElementById('hideUnchangedBtn').addEventListener('click', () => {
+  HIDE_UNCHANGED = !HIDE_UNCHANGED;
+  localStorage.setItem('uscis_hide_unchanged', HIDE_UNCHANGED ? '1' : '0');
   render();
 });
 
