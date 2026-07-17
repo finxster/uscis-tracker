@@ -135,6 +135,20 @@ Open the dashboard:
 open dashboard.html
 ```
 
+### Checking only some cases
+
+By default every configured case is checked. Use `--only` (or `-o`) to narrow
+it down. Terms match, case-insensitively, against the owner, label and receipt:
+
+```bash
+python3 check.py --only luis        # every case belonging to Luis
+python3 check.py --only luis 485    # just Luis's I-485 (all terms must match)
+python3 check.py -o IOE0936674431   # a single case by receipt
+```
+
+The dashboard is still rewritten from full state, so a filtered run only limits
+which cases are polled — it doesn't drop the others from the dashboard.
+
 ### Mask mode (for screenshots / sharing)
 
 The dashboard has a **Mask** toggle in the top right. When on:

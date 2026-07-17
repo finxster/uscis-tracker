@@ -312,12 +312,41 @@ def try_case_against_profiles(
     return None, last_err or "auth", None
 
 
-def cmd_check() -> int:
+def filter_cases(cases: list[dict], terms: list[str]) -> list[dict]:
+    """Keep cases matching every term (case-insensitive substring).
+
+    A term is matched against the case owner, label, receipt and display
+    name, so `--only luis` narrows to a person and `--only luis 485` further
+    narrows to that person's I-485.
+    """
+    terms = [t.strip().lower() for t in terms if t.strip()]
+    if not terms:
+        return cases
+    out = []
+    for case in cases:
+        hay = " ".join([
+            case.get("owner", ""),
+            case.get("label", ""),
+            case.get("receipt", ""),
+            case.get("name", ""),
+        ]).lower()
+        if all(t in hay for t in terms):
+            out.append(case)
+    return out
+
+
+def cmd_check(only: list[str] | None = None) -> int:
     config = load_config()
     cases = iter_cases(config)
     if not cases:
         print("ERROR: no cases configured in config.json")
         return 1
+
+    if only:
+        cases = filter_cases(cases, only)
+        if not cases:
+            print(f"ERROR: no cases matched --only {' '.join(only)}")
+            return 1
 
     DATA_DIR.mkdir(exist_ok=True)
 
@@ -546,7 +575,21 @@ def main() -> int:
     args = sys.argv[1:]
     if args and args[0] == "setup":
         return cmd_setup()
-    return cmd_check()
+
+    # Filter which cases to check, e.g. `--only luis` or `--only luis 485`.
+    # Terms run until the next flag or end of args.
+    only: list[str] = []
+    i = 0
+    while i < len(args):
+        if args[i] in ("--only", "-o"):
+            i += 1
+            while i < len(args) and not args[i].startswith("-"):
+                only.append(args[i])
+                i += 1
+            continue
+        i += 1
+
+    return cmd_check(only=only or None)
 
 
 def collect_dashboard_data(cases: list[dict]) -> list[dict]:
