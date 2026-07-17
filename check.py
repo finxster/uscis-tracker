@@ -128,12 +128,20 @@ def load_config() -> dict:
         return json.load(f)
 
 
-def iter_cases(config: dict) -> list[dict]:
-    """Flatten config into [{owner, label, name, receipt}, ...]."""
+def iter_cases(config: dict, include_done: bool = False) -> list[dict]:
+    """Flatten config into [{owner, label, name, receipt, done}, ...].
+
+    By default `done` cases (approved/closed) are skipped so they are no
+    longer polled. Pass include_done=True to keep them (used by the
+    dashboard, which still shows them as approved).
+    """
     out = []
     for person in config.get("people", []):
         owner = (person.get("name") or "").strip()
         for c in person.get("cases", []):
+            done = bool(c.get("done"))
+            if done and not include_done:
+                continue  # approved/closed — no need to keep polling
             label = (c.get("label") or "").strip()
             receipt = (c.get("receipt") or "").strip()
             display = f"{owner} {label}".strip() if label else owner
@@ -142,6 +150,7 @@ def iter_cases(config: dict) -> list[dict]:
                 "label": label,
                 "name": display,
                 "receipt": receipt,
+                "done": done,
             })
     return out
 
@@ -414,7 +423,9 @@ def cmd_check() -> int:
         log(f"{'🔔' if changed else '✓'} {name} ({receipt}) [{used}] — {marker}")
 
     save_profile_map(pmap)
-    write_dashboard(cases)
+    # Render every case in the dashboard, including approved/done ones (which
+    # are not polled above but should still show their last-known status).
+    write_dashboard(iter_cases(config, include_done=True))
     log(f"Dashboard written: {DASHBOARD_PATH}")
     return 0
 
@@ -560,6 +571,7 @@ def collect_dashboard_data(cases: list[dict]) -> list[dict]:
         # independently of the composed name string stored in history files.
         entry["owner"] = case.get("owner") or ""
         entry["label"] = case.get("label") or ""
+        entry["done"] = bool(case.get("done"))
         out.append(entry)
     return out
 
@@ -691,11 +703,17 @@ DASHBOARD_TEMPLATE = r"""<!DOCTYPE html>
   .badge.update { color: var(--accent); animation: pulse 1.6s infinite; }
   .badge.err { color: var(--err); }
   .badge.idle { color: var(--muted); }
+  .badge.done { color: var(--ok); border-style: solid; background: rgba(64, 200, 120, 0.08); }
+  .card.done { opacity: 0.72; }
   .chk-group-summary td { cursor: pointer; color: var(--muted); }
   .chk-group-summary:hover td { color: var(--text); }
   tr.chk-changed { cursor: pointer; }
   tr.chk-changed:hover td { background: rgba(255, 181, 71, 0.08); }
   tr.chk-changed td:last-child::after { content: ' ⤢'; font-size: 9px; opacity: 0.6; }
+  tr.chk-json { cursor: pointer; }
+  tr.chk-json:hover td { background: rgba(120, 180, 255, 0.07); }
+  tr.chk-json td:last-child::after { content: ' { }'; font-size: 9px; opacity: 0.35; font-family: 'IBM Plex Mono', monospace; }
+  pre.json-dump { background: var(--bg); border: 1px solid var(--border); padding: 12px 14px; overflow-x: auto; font-family: 'IBM Plex Mono', monospace; font-size: 11px; line-height: 1.5; color: var(--text); white-space: pre; margin: 0 0 8px; }
   #diff-modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.78); z-index: 100; overflow: auto; padding: 40px 16px; }
   #diff-modal-inner { margin: 0 auto; max-width: 860px; background: var(--panel); border: 1px solid var(--border); padding: 24px; }
   #diff-modal-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px; }
@@ -933,6 +951,9 @@ function changedSinceLastRun(checks) {
 }
 
 function renderBadge(caseData) {
+  if (caseData.done) {
+    return '<span class="badge done">✓ Approved</span>';
+  }
   if (caseData.cookie_expired) {
     return '<span class="badge err">⚠ Cookie Expired</span>';
   }
@@ -984,6 +1005,10 @@ function renderCheckRow(item, receipt) {
     clickable = ` class="${cls} chk-changed" onclick="showDiff('${receipt}', ${item.i})" title="Click to see what changed"`;
   } else {
     mark = '·';
+    // No change, but still let the user inspect the raw snapshot JSON.
+    if (c.snapshot || c.status_snapshot) {
+      clickable = ` class="chk-json" onclick="showSnapshot('${receipt}', ${item.i})" title="Click to see the raw JSON snapshot"`;
+    }
   }
   const trAttrs = clickable || (cls ? ` class="${cls}"` : '');
   return `<tr${trAttrs}><td>${escapeHtml(fmtTs(c.timestamp))}</td><td>${sha}</td><td>${mark}</td></tr>`;
@@ -1035,7 +1060,11 @@ function renderHistory(checks, receipt) {
       `<td><span class="pill" id="${id}-pill">▶ ${n} checks</span></td></tr>`;
     const detail = g.items.map(it => {
       const sha2 = it.c.sha ? it.c.sha.substring(0, 8) : '—';
-      return `<tr data-group="${id}" style="display:none">` +
+      const hasSnap = it.c.snapshot || it.c.status_snapshot;
+      const attrs = hasSnap
+        ? ` data-group="${id}" class="chk-json" style="display:none" onclick="showSnapshot('${receipt}', ${it.i})" title="Click to see the raw JSON snapshot"`
+        : ` data-group="${id}" style="display:none"`;
+      return `<tr${attrs}>` +
         `<td style="padding-left:20px;color:var(--muted)">${escapeHtml(fmtTs(it.c.timestamp))}</td>` +
         `<td style="color:var(--muted)">${sha2}</td><td style="color:var(--muted)">·</td></tr>`;
     }).join('');
@@ -1087,7 +1116,7 @@ function renderCard(caseData) {
   const statusTooltip = statusTooltipText ? ` title="${escapeHtml(statusTooltipText)}"` : '';
 
   return `
-    <article class="card">
+    <article class="card${caseData.done ? ' done' : ''}">
       <div class="card-head">
         <div>
           <div class="card-name">${escapeHtml(maskName(caseData))}</div>
@@ -1194,6 +1223,31 @@ function showDiff(receipt, idx) {
   }
   if (!content) {
     content = '<div class="empty">No snapshot detail recorded for this check</div>';
+  }
+  document.getElementById('diff-modal-content').innerHTML = content;
+  document.getElementById('diff-modal').style.display = 'block';
+}
+
+function showSnapshot(receipt, idx) {
+  const caseData = CASES.find(c => c.receipt === receipt);
+  if (!caseData || !caseData.checks) return;
+  const curr = caseData.checks[idx];
+  if (!curr) return;
+
+  document.getElementById('diff-modal-title').textContent =
+    `${caseData.name || receipt} · RAW JSON @ ${fmtTs(curr.timestamp)}`;
+
+  let content = '';
+  if (curr.snapshot) {
+    content += '<div class="diff-section-title">Case data</div>';
+    content += `<pre class="json-dump">${escapeHtml(JSON.stringify(curr.snapshot, null, 2))}</pre>`;
+  }
+  if (curr.status_snapshot) {
+    content += '<div class="diff-section-title">Status</div>';
+    content += `<pre class="json-dump">${escapeHtml(JSON.stringify(curr.status_snapshot, null, 2))}</pre>`;
+  }
+  if (!content) {
+    content = '<div class="empty">No snapshot recorded for this check</div>';
   }
   document.getElementById('diff-modal-content').innerHTML = content;
   document.getElementById('diff-modal').style.display = 'block';

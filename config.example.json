@@ -4,7 +4,7 @@
       "name": "Sam",
       "cases": [
         { "label": "I-485", "receipt": "IOExxxxxxxxx" },
-        { "label": "EAD",   "receipt": "IOExxxxxxxxx" }
+        { "label": "EAD",   "receipt": "IOExxxxxxxxx", "done": true }
       ]
     },
     {

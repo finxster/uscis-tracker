@@ -71,6 +71,7 @@ cp config.example.json config.json
 - `people[].name`: USCIS account owner. Cases under the same person share a Chrome profile, so `setup` probes only one case per person.
 - `cases[].label`: free-form tag shown in the dashboard (e.g. `I-485`, `EAD`, `AP`).
 - `cases[].receipt`: full receipt number starting with `IOE`.
+- `cases[].done` (optional): set to `true` once a case is approved/closed — it stops being polled but its history in `data/` is kept.
 
 > `config.json` is in `.gitignore` and is never committed.
 
